@@ -1,0 +1,310 @@
+_addon.name     = 'LuaToggler'
+_addon.author   = 'AI Assistant'
+_addon.version  = '8.0'
+_addon.commands = {'luatog', 'lt'}
+
+local imgui = require('imgui')
+local lfs = require('lfs')
+local config = require('config')
+
+-- Default configuration structure
+local default_settings = {
+    auto_refresh   = true,
+    window_width   = 300,
+    window_height  = 500,
+    show_window    = true,
+    master_active  = false,
+    delay_ms       = 500,
+    font_scale     = 1.0,
+    text_color     = {1.0, 1.0, 1.0, 1.0},
+    bg_color       = {0.06, 0.06, 0.06, 0.94},
+    bg_image_path  = "",
+    saved_states   = {}
+}
+
+local settings = config.load(default_settings)
+
+local ignore_list = {
+    ["luatoggler"] = true,
+    ["wincontrol"] = true,
+    ["libs"]       = true,
+}
+
+-- State Management
+local addon_list = {}
+local search_query = imgui.CreateVarString("")
+local show_config = false
+local texture_loaded = false
+local bg_texture = nil
+
+-- UI ImGui Specific Wrappers
+local imgui_auto_refresh = imgui.CreateVarBool(settings.auto_refresh)
+local imgui_window_width = imgui.CreateVarInt(settings.window_width)
+local imgui_window_height = imgui.CreateVarInt(settings.window_height)
+local imgui_master_toggle = imgui.CreateVarBool(settings.master_active)
+local imgui_delay_ms = imgui.CreateVarInt(settings.delay_ms)
+local imgui_font_scale = imgui.CreateVarFloat(settings.font_scale)
+local imgui_text_color = imgui.CreateVarFloat4(settings.text_color, settings.text_color, settings.text_color, settings.text_color)
+local imgui_bg_color = imgui.CreateVarFloat4(settings.bg_color, settings.bg_color, settings.bg_color, settings.bg_color)
+local imgui_bg_image = imgui.CreateVarString(settings.bg_image_path)
+
+-- Command Execution Queue
+local command_queue = {}
+local last_command_time = 0
+
+local function queue_command(command)
+    table.insert(command_queue, command)
+end
+
+local function refresh_addon_list()
+    local path = windower.addon_path
+    if not path then return end
+    
+    for folder in lfs.dir(path) do
+        local lower_folder = folder:lower()
+        if folder ~= "." and folder ~= ".." and not ignore_list[lower_folder] then
+            local attr = lfs.attributes(path .. folder)
+            if attr and attr.mode == "directory" then
+                if windower.file_exists(path .. folder .. '/' .. folder .. '.lua') then
+                    if settings.saved_states[folder] == nil then
+                        settings.saved_states[folder] = false
+                    end
+                end
+            end
+        end
+    end
+
+    addon_list = {}
+    for name, is_on in pairs(settings.saved_states) do
+        table.insert(addon_list, {name = name, active = is_on})
+    end
+
+    table.sort(addon_list, function(a, b)
+        if a.active ~= b.active then
+            return a.active and not b.active
+        end
+        return a.name:lower() < b.name:lower()
+    end)
+end
+
+local function update_background_texture()
+    local path = imgui.GetVarString(imgui_bg_image)
+    if path ~= "" and windower.file_exists(windower.addon_path .. path) then
+        bg_texture = imgui.load_texture(windower.addon_path .. path)
+        texture_loaded = (bg_texture ~= nil)
+    else
+        texture_loaded = false
+        bg_texture = nil
+    end
+end
+
+refresh_addon_list()
+update_background_texture()
+
+windower.register_event('addon command', function(cmd, ...)
+    settings.show_window = not settings.show_window
+    config.save(settings)
+end)
+
+windower.register_event('time change', function(new_time)
+    local current_time = os.clock()
+    local delay_seconds = settings.delay_ms / 1000
+    
+    if #command_queue > 0 and (current_time - last_command_time) >= delay_seconds then
+        local next_cmd = table.remove(command_queue, 1)
+        windower.send_command(next_cmd)
+        last_command_time = current_time
+    end
+end)
+
+-- Render Loop
+windower.register_event('prerender', function()
+    if not settings.show_window then return end
+
+    local is_auto = imgui.GetVarBool(imgui_auto_refresh)
+    local w = is_auto and 0 or imgui.GetVarInt(imgui_window_width)
+    local h = is_auto and 0 or imgui.GetVarInt(imgui_window_height)
+    
+    -- Added NoTitleBar to hide the default window title bar
+    local flags = imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.NoTitleBar
+    if w == 0 or h == 0 then
+        flags = flags + imgui.WindowFlags.AlwaysAutoResize
+    else
+        imgui.set_next_window_size(w, h, imgui.SetCond.Always)
+    end
+
+    imgui.set_window_font_scale(imgui.GetVarFloat(imgui_font_scale))
+
+    imgui.push_style_color(imgui.Col.Text, imgui_text_color)
+    imgui.push_style_color(imgui.Col.WindowBg, imgui_bg_color)
+
+    local window_open, window_pressed = imgui.begin_window("Lua Manager Pro", settings.show_window, flags)
+    if not window_open then
+        settings.show_window = false
+        config.save(settings)
+    end
+
+    if texture_loaded and bg_texture then
+        local win_pos_x, win_pos_y = imgui.get_window_position()
+        local win_w, win_h = imgui.get_window_size()
+        imgui.window_draw_list_add_image(bg_texture, win_pos_x, win_pos_y, win_pos_x + win_w, win_pos_y + win_h)
+    end
+
+    -- ==================== DRAG BAR IMPLEMENTATION ====================
+    -- This creates a styled bar at the top that acts as the grab window handle
+    imgui.push_style_color(imgui.Col.Button, {0.2, 0.2, 0.2, 0.6})
+    imgui.push_style_color(imgui.Col.ButtonHovered, {0.3, 0.3, 0.3, 0.8})
+    imgui.push_style_color(imgui.Col.ButtonActive, {0.4, 0.4, 0.4, 1.0})
+    
+    -- Button width stretches to match window bounds dynamically
+    imgui.button("::: Lua Toggler Menu (Drag Here) :::", -1, 20)
+    
+    imgui.pop_style_color(3)
+    -- =================================================================
+
+    -- Header Controls
+    if imgui.button("Refresh Folders") then
+        refresh_addon_list()
+        windower.add_to_chat(207, "LuaToggler: Folders resynced.")
+    end
+    imgui.same_line()
+    
+    if imgui.button("⚙ Config") then
+        show_config = not show_config
+    end
+    
+    -- Collapsible Config Menu
+    if show_config then
+        imgui.begin_child("ConfigPanel", 0, 310, true)
+        imgui.text("Visual & Core Settings:")
+        
+        local scale_changed, scale_val = imgui.slider_float("Font Scale", imgui.GetVarFloat(imgui_font_scale), 0.5, 2.5, "%.1fx")
+        if scale_changed then
+            imgui.SetVarFloat(imgui_font_scale, scale_val)
+            settings.font_scale = scale_val
+            config.save(settings)
+        end
+
+        local text_col_changed, tc_r, tc_g, tc_b, tc_a = imgui.color_edit4("Text Color", imgui.GetVarFloat4(imgui_text_color))
+        if text_col_changed then
+            imgui.SetVarFloat4(imgui_text_color, tc_r, tc_g, tc_b, tc_a)
+            settings.text_color = {tc_r, tc_g, tc_b, tc_a}
+            config.save(settings)
+        end
+
+        local bg_col_changed, bg_r, bg_g, bg_b, bg_a = imgui.color_edit4("Window BG", imgui.GetVarFloat4(imgui_bg_color))
+        if bg_col_changed then
+            imgui.SetVarFloat4(imgui_bg_color, bg_r, bg_g, bg_b, bg_a)
+            settings.bg_color = {bg_r, bg_g, bg_b, bg_a}
+            config.save(settings)
+        end
+
+        imgui.text("Background Image Path:")
+        local img_changed = imgui.input_text("##bgimage", imgui_bg_image, 255)
+        if img_changed then
+            local path_val = imgui.GetVarString(imgui_bg_image)
+            settings.bg_image_path = path_val
+            config.save(settings)
+            update_background_texture()
+        end
+        imgui.text_disabled("Put file in 'LuaToggler/' then type file name")
+
+        imgui.separator()
+
+        local ref_changed, ref_val = imgui.checkbox("Auto-Resort on Toggle", imgui.GetVarBool(imgui_auto_refresh))
+        if ref_changed then
+            imgui.SetVarBool(imgui_auto_refresh, ref_val)
+            settings.auto_refresh = ref_val
+            config.save(settings)
+        end
+        
+        imgui.text("Queue Delay:")
+        local current_slider_val = imgui.GetVarInt(imgui_delay_ms)
+        local slider_changed, new_slider_val = imgui.slider_int("##delayms", current_slider_val, 50, 5000, "%d ms")
+        
+        if slider_changed then
+            local stepped_val = math.floor((new_slider_val + 25) / 50) * 50
+            if stepped_val < 50 then stepped_val = 50 end
+            if stepped_val > 5000 then stepped_val = 5000 end
+            imgui.SetVarInt(imgui_delay_ms, stepped_val)
+            settings.delay_ms = stepped_val
+            config.save(settings)
+        end
+        
+        imgui.text("Manual Size (X / Y):")
+        imgui.push_item_width(60)
+        local w_changed, w_val = imgui.input_int("##width", imgui.GetVarInt(imgui_window_width))
+        if w_changed then 
+            imgui.SetVarInt(imgui_window_width, w_val)
+            settings.window_width = w_val
+            config.save(settings)
+        end
+        imgui.same_line()
+        local h_changed, h_val = imgui.input_int("##height", imgui.GetVarInt(imgui_window_height))
+        if h_changed then 
+            imgui.SetVarInt(imgui_window_height, h_val)
+            settings.window_height = h_val
+            config.save(settings)
+        end
+        imgui.pop_item_width()
+        
+        imgui.end_child()
+    end
+
+    imgui.separator()
+
+    -- Master Toggle Switch
+    local master_changed, master_val = imgui.checkbox("🛑 MASTER TOGGLE SWITCH", imgui.GetVarBool(imgui_master_toggle))
+    if master_changed then
+        imgui.SetVarBool(imgui_master_toggle, master_val)
+        settings.master_active = master_val
+        config.save(settings)
+        
+        command_queue = {} 
+        
+        for _, addon in ipairs(addon_list) do
+            if settings.master_active then
+                if addon.active then
+                    queue_command('lua load ' .. addon.name)
+                end
+            else
+                queue_command('lua unload ' .. addon.name)
+            end
+        end
+    end
+
+    imgui.separator()
+
+    -- Search Bar
+    imgui.text("🔍 Filter:")
+    imgui.same_line()
+    imgui.input_text("##search", search_query, 255)
+    local current_search = imgui.GetVarString(search_query):lower()
+
+    imgui.separator()
+
+    -- Render Addon Row List
+    for _, addon in ipairs(addon_list) do
+        if current_search == "" or addon.name:lower():find(current_search, 1, true) then
+            local changed, pressed = imgui.checkbox(addon.name, addon.active)
+            if changed then
+                addon.active = pressed
+                settings.saved_states[addon.name] = pressed 
+                config.save(settings)
+                
+                if addon.active and settings.master_active then
+                    queue_command('lua load ' .. addon.name)
+                elseif not addon.active then
+                    queue_command('lua unload ' .. addon.name)
+                end
+                
+                if settings.auto_refresh then
+                    refresh_addon_list()
+                end
+            end
+        end
+    end
+
+    imgui.end_window()
+    imgui.pop_style_color(2)
+end)
