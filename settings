@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<settings>
+    <global>
+        <auto_refresh>true</auto_refresh>
+        <window_width>300</window_width>
+        <window_height>500</window_height>
+        <show_window>true</show_window>
+        <master_active>false</master_active>
+        <delay_ms>500</delay_ms>
+        
+        <!-- Controls how large the UI text and elements render (0.5 to 2.5) -->
+        <font_scale>1.0</font_scale>
+        
+        <!-- Custom Color Configuration Profiles [Red, Green, Blue, Alpha (Opacity)] -->
+        <!-- Value ranges must remain strictly between 0.0 (minimum) and 1.0 (maximum) -->
+        <text_color>
+            <item>1.0</item>
+            <item>1.0</item>
+            <item>1.0</item>
+            <item>1.0</item>
+        </text_color>
+        
+        <bg_color>
+            <item>0.06</item>
+            <item>0.06</item>
+            <item>0.06</item>
+            <item>0.94</item>
+        </bg_color>
+        
+        <!-- File name path string inside the main folder (e.g., custom_art.jpg) -->
+        <!-- Leave empty if you only want to utilize flat color presets instead -->
+        <bg_image_path>bg.png</bg_image_path>
+        
+        <saved_states></saved_states>
+    </global>
+</settings>
